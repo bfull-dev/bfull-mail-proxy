@@ -21,12 +21,18 @@ app.options('/api/get-image', (req, res) => res.sendStatus(204));
 
 // Nodemailer SMTP transporter（blastengine SMTPリレー）
 const transporter = nodemailer.createTransport({
-  host:   process.env.SMTP_HOST,
-  port:   parseInt(process.env.SMTP_PORT || '587', 10),
-  secure: process.env.SMTP_SECURE === 'true', // ポート465の場合 true
+  host:             process.env.SMTP_HOST,
+  port:             parseInt(process.env.SMTP_PORT || '2525', 10),
+  secure:           process.env.SMTP_SECURE === 'true', // ポート465の場合 true
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
+  },
+  connectionTimeout: 15000, // 接続タイムアウト 15秒
+  greetingTimeout:   10000, // GREETINGタイムアウト 10秒
+  socketTimeout:     30000, // ソケットタイムアウト 30秒
+  tls: {
+    rejectUnauthorized: false, // 自己署名証明書も許可
   },
 });
 
