@@ -18,7 +18,7 @@ app.use((req, res, next) => {
 
 app.options('/api/send-mail', (req, res) => res.sendStatus(204));
 
-// SMTPトランスポーター初期化
+// SMTPトランスポーター初期化（コネクションプール + タイムアウト設定）
 const transporter = nodemailer.createTransport({
   host:   process.env.SMTP_HOST,
   port:   parseInt(process.env.SMTP_PORT, 10),
@@ -27,6 +27,20 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  pool:              true,   // コネクションを再利用してレイテンシ削減
+  maxConnections:    3,
+  connectionTimeout: 5000,   // 接続タイムアウト 5秒
+  greetingTimeout:   5000,   // SMTPグリーティング待ち 5秒
+  socketTimeout:     8000,   // ソケットタイムアウト 8秒
+});
+
+// サーバー起動時にSMTP接続を事前確立（コールドスタート対策）
+transporter.verify((err) => {
+  if (err) {
+    console.error(`[${new Date().toISOString()}] SMTP verify error:`, err.message);
+  } else {
+    console.log(`[${new Date().toISOString()}] SMTP connection verified.`);
+  }
 });
 
 // ============================================================
