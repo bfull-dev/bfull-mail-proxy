@@ -29,8 +29,8 @@ const transporter = nodemailer.createTransport({
   },
   pool:              true,   // コネクションを再利用してレイテンシ削減
   maxConnections:    3,
-  connectionTimeout: 5000,   // 接続タイムアウト 5秒
-  greetingTimeout:   5000,   // SMTPグリーティング待ち 5秒
+  connectionTimeout: 7000,   // 接続タイムアウト 7秒
+  greetingTimeout:   7000,   // SMTPグリーティング待ち 7秒
   socketTimeout:     8000,   // ソケットタイムアウト 8秒
 });
 
