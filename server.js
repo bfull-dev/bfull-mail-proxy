@@ -3,6 +3,7 @@
 
 const express = require('express');
 const axios   = require('axios');
+const crypto  = require('crypto');
 require('dotenv').config();
 
 const app = express();
@@ -17,11 +18,10 @@ app.use((req, res, next) => {
 
 app.options('/api/send-mail', (req, res) => res.sendStatus(204));
 
-// blastengine 認証ヘッダー生成
+// blastengine 認証ヘッダー生成（APIキーはSHA256ハッシュ化が必要）
 function beAuthHeader() {
-  const credential = Buffer.from(
-    `${process.env.BE_USER_ID}:${process.env.BE_API_KEY}`
-  ).toString('base64');
+  const hashedKey  = crypto.createHash('sha256').update(process.env.BE_API_KEY).digest('hex');
+  const credential = Buffer.from(`${process.env.BE_USER_ID}:${hashedKey}`).toString('base64');
   return `Basic ${credential}`;
 }
 
