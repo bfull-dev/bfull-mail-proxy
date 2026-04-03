@@ -16,7 +16,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.options('/api/send-mail', (req, res) => res.sendStatus(204));
+app.options('/api/send-mail',  (req, res) => res.sendStatus(204));
+app.options('/api/get-image',  (req, res) => res.sendStatus(204));
 
 // blastengine BearerToken生成
 // 手順: SHA256(ログインID + APIキー) → 小文字化 → base64エンコード
@@ -90,6 +91,42 @@ app.post('/api/send-mail', async (req, res) => {
       success: false,
       error: typeof detail === 'object' ? JSON.stringify(detail) : detail,
     });
+  }
+});
+
+// ============================================================
+// POST /api/get-image  kintone添付ファイルをbase64で取得
+// ============================================================
+app.post('/api/get-image', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.API_KEY) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  const { fileKey } = req.body;
+  if (!fileKey) {
+    return res.status(400).json({ success: false, error: 'fileKey required' });
+  }
+
+  const kintoneUrl = `https://${process.env.KINTONE_DOMAIN}/k/v1/file?fileKey=${encodeURIComponent(fileKey)}`;
+
+  try {
+    const response = await axios.get(kintoneUrl, {
+      headers: { 'X-Cybozu-API-Token': process.env.KINTONE_API_TOKEN },
+      responseType: 'arraybuffer',
+      timeout: 10000,
+    });
+
+    const contentType = response.headers['content-type'] || 'image/jpeg';
+    const base64  = Buffer.from(response.data).toString('base64');
+    const dataUrl = `data:${contentType};base64,${base64}`;
+
+    console.log(`[${new Date().toISOString()}] Image fetched: fileKey=${fileKey.slice(0, 16)}... size=${response.data.byteLength}`);
+    res.json({ success: true, dataUrl });
+
+  } catch (err) {
+    const detail = err.response?.data ? `HTTP ${err.response.status}` : err.message;
+    console.error(`[${new Date().toISOString()}] Image fetch error:`, detail);
+    res.status(500).json({ success: false, error: detail });
   }
 });
 
