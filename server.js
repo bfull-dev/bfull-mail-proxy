@@ -18,11 +18,12 @@ app.use((req, res, next) => {
 
 app.options('/api/send-mail', (req, res) => res.sendStatus(204));
 
-// blastengine 認証ヘッダー生成（APIキーはSHA256ハッシュ化が必要）
-function beAuthHeader() {
-  const hashedKey  = crypto.createHash('sha256').update(process.env.BE_API_KEY).digest('hex');
-  const credential = Buffer.from(`${process.env.BE_USER_ID}:${hashedKey}`).toString('base64');
-  return `Basic ${credential}`;
+// blastengine BearerToken生成
+// 手順: SHA256(ログインID + APIキー) → 小文字化 → base64エンコード
+function generateBearerToken() {
+  const combined = process.env.BE_USER_ID + process.env.BE_API_KEY;
+  const sha256   = crypto.createHash('sha256').update(combined).digest('hex').toLowerCase();
+  return Buffer.from(sha256).toString('base64');
 }
 
 const BE_API_URL = 'https://app.engn.jp/api/v1/sendings/transactional';
@@ -62,7 +63,7 @@ app.post('/api/send-mail', async (req, res) => {
 
     const response = await axios.post(BE_API_URL, payload, {
       headers: {
-        'Authorization': beAuthHeader(),
+        'Authorization': `Bearer ${generateBearerToken()}`,
         'Content-Type':  'application/json',
       },
       timeout: 8000,
