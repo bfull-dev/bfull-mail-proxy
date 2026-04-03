@@ -1,13 +1,13 @@
 // proxy-server/server.js
-// 注文書メール送信プロキシAPI（Node.js + Express + blastengine）
+// 注文書メール送信プロキシAPI（Node.js + Express + Nodemailer + blastengine SMTPリレー）
 
-const express = require('express');
-const axios   = require('axios');
-const crypto  = require('crypto');
+const express    = require('express');
+const axios      = require('axios');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,19 +16,21 @@ app.use((req, res, next) => {
   next();
 });
 
-app.options('/api/send-mail',  (req, res) => res.sendStatus(204));
-app.options('/api/get-image',  (req, res) => res.sendStatus(204));
+app.options('/api/send-mail', (req, res) => res.sendStatus(204));
+app.options('/api/get-image', (req, res) => res.sendStatus(204));
 
-// blastengine BearerToken生成
-// 手順: SHA256(ログインID + APIキー) → 小文字化 → base64エンコード
-function generateBearerToken() {
-  const combined = process.env.BE_USER_ID + process.env.BE_API_KEY;
-  const sha256   = crypto.createHash('sha256').update(combined).digest('hex').toLowerCase();
-  return Buffer.from(sha256).toString('base64');
-}
+// Nodemailer SMTP transporter（blastengine SMTPリレー）
+const transporter = nodemailer.createTransport({
+  host:   process.env.SMTP_HOST,
+  port:   parseInt(process.env.SMTP_PORT || '587', 10),
+  secure: process.env.SMTP_SECURE === 'true', // ポート465の場合 true
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
 
-const BE_API_URL  = 'https://app.engn.jp/api/v1/deliveries/transaction';
-const BCC_CHUNK   = 10; // blastengine BCCは1リクエスト最大10件
+const BCC_CHUNK = 10; // BCCは1送信あたり最大10件
 
 // ============================================================
 // POST /api/send-mail
@@ -38,7 +40,7 @@ app.post('/api/send-mail', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { from, fromName, to, bcc, subject, text, html } = req.body;
+  const { from, fromName, to, bcc, subject, text, html, attachments } = req.body;
 
   if (!from || !to || !subject || !text) {
     return res.status(400).json({
@@ -50,11 +52,19 @@ app.post('/api/send-mail', async (req, res) => {
   const toList  = Array.isArray(to)  ? to  : [to];
   const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
 
-  const token   = generateBearerToken();
-  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  // attachments: [{ filename, contentType, contentBase64, cid }, ...]
+  // Nodemailer 形式に変換
+  const mailAttachments = Array.isArray(attachments)
+    ? attachments.map(att => ({
+        filename:    att.filename,
+        content:     Buffer.from(att.contentBase64, 'base64'),
+        contentType: att.contentType,
+        cid:         att.cid,
+      }))
+    : [];
 
   try {
-    // BCCを10件ずつに分割して送信
+    // BCCを10件ずつ分割して送信
     const bccChunks = [];
     if (bccList.length > 0) {
       for (let i = 0; i < bccList.length; i += BCC_CHUNK) {
@@ -64,33 +74,30 @@ app.post('/api/send-mail', async (req, res) => {
       bccChunks.push([]); // BCCなしで1回送信
     }
 
-    const jobIds = [];
+    const messageIds = [];
     for (const chunk of bccChunks) {
-      const payload = {
-        from:      { email: from, name: fromName || '株式会社Bfull 新商品案内' },
-        to:        toList[0],
+      const mailOptions = {
+        from:        fromName ? `"${fromName}" <${from}>` : from,
+        to:          toList.join(', '),
         subject,
-        text_part: text,
+        text,
+        html:        html || undefined,
+        attachments: mailAttachments,
       };
-      if (html) payload.html_part = html;
       if (chunk.length > 0) {
-        payload.bcc = chunk;
+        mailOptions.bcc = chunk.join(', ');
       }
 
-      const response = await axios.post(BE_API_URL, payload, { headers, timeout: 8000 });
-      jobIds.push(response.data.job_id);
-      console.log(`[${new Date().toISOString()}] Mail sent: job_id=${response.data.job_id}`);
+      const info = await transporter.sendMail(mailOptions);
+      messageIds.push(info.messageId);
+      console.log(`[${new Date().toISOString()}] Mail sent: messageId=${info.messageId} bcc=${chunk.length}件`);
     }
 
-    res.json({ success: true, jobIds });
+    res.json({ success: true, messageIds });
 
   } catch (err) {
-    const detail = err.response?.data || err.message;
-    console.error(`[${new Date().toISOString()}] Mail send error:`, detail);
-    res.status(500).json({
-      success: false,
-      error: typeof detail === 'object' ? JSON.stringify(detail) : detail,
-    });
+    console.error(`[${new Date().toISOString()}] Mail send error:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -110,7 +117,6 @@ app.post('/api/get-image', async (req, res) => {
   const kintoneUrl = `https://${process.env.KINTONE_DOMAIN}/k/v1/file?fileKey=${encodeURIComponent(fileKey)}`;
 
   try {
-    // Basic認証とAPIトークン認証の両方を試みる
     const authHeaders = {};
     if (process.env.KINTONE_LOGIN_NAME && process.env.KINTONE_PASSWORD) {
       const cred = Buffer.from(`${process.env.KINTONE_LOGIN_NAME}:${process.env.KINTONE_PASSWORD}`).toString('base64');
