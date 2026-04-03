@@ -1,8 +1,8 @@
 // proxy-server/server.js
-// 注文書メール送信プロキシAPI（Node.js + Express + Resend）
+// 注文書メール送信プロキシAPI（Node.js + Express + blastengine）
 
 const express = require('express');
-const { Resend } = require('resend');
+const axios   = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -17,7 +17,15 @@ app.use((req, res, next) => {
 
 app.options('/api/send-mail', (req, res) => res.sendStatus(204));
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// blastengine 認証ヘッダー生成
+function beAuthHeader() {
+  const credential = Buffer.from(
+    `${process.env.BE_USER_ID}:${process.env.BE_API_KEY}`
+  ).toString('base64');
+  return `Basic ${credential}`;
+}
+
+const BE_API_URL = 'https://app.engn.jp/api/v1/sendings/transactional';
 
 // ============================================================
 // POST /api/send-mail
@@ -40,25 +48,36 @@ app.post('/api/send-mail', async (req, res) => {
   const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
 
   try {
-    const { data, error } = await resend.emails.send({
-      from,
-      to:      toList,
-      bcc:     bccList.length > 0 ? bccList : undefined,
+    const payload = {
+      from: { email: from },
+      to:   toList[0],
       subject,
-      text,
-    });
+      text_part: text,
+    };
 
-    if (error) {
-      console.error(`[${new Date().toISOString()}] Resend error:`, error);
-      return res.status(500).json({ success: false, error: error.message });
+    // BCC が存在する場合に追加
+    if (bccList.length > 0) {
+      payload.bcc = bccList.map(email => ({ email }));
     }
 
-    console.log(`[${new Date().toISOString()}] Mail sent: ${data.id}`);
-    res.json({ success: true, messageId: data.id });
+    const response = await axios.post(BE_API_URL, payload, {
+      headers: {
+        'Authorization': beAuthHeader(),
+        'Content-Type':  'application/json',
+      },
+      timeout: 8000,
+    });
+
+    console.log(`[${new Date().toISOString()}] Mail sent: job_id=${response.data.job_id}`);
+    res.json({ success: true, jobId: response.data.job_id });
 
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Mail send error:`, err);
-    res.status(500).json({ success: false, error: err.message });
+    const detail = err.response?.data || err.message;
+    console.error(`[${new Date().toISOString()}] Mail send error:`, detail);
+    res.status(500).json({
+      success: false,
+      error: typeof detail === 'object' ? JSON.stringify(detail) : detail,
+    });
   }
 });
 
