@@ -26,7 +26,8 @@ function generateBearerToken() {
   return Buffer.from(sha256).toString('base64');
 }
 
-const BE_API_URL = 'https://app.engn.jp/api/v1/sendings/transactional';
+const BE_API_URL  = 'https://app.engn.jp/api/v1/deliveries/transaction';
+const BCC_CHUNK   = 10; // blastengine BCCは1リクエスト最大10件
 
 // ============================================================
 // POST /api/send-mail
@@ -48,29 +49,38 @@ app.post('/api/send-mail', async (req, res) => {
   const toList  = Array.isArray(to)  ? to  : [to];
   const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
 
-  try {
-    const payload = {
-      from: { email: from },
-      to:   toList[0],
-      subject,
-      text_part: text,
-    };
+  const token   = generateBearerToken();
+  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-    // BCC が存在する場合に追加
+  try {
+    // BCCを10件ずつに分割して送信
+    const bccChunks = [];
     if (bccList.length > 0) {
-      payload.bcc = bccList.map(email => ({ email }));
+      for (let i = 0; i < bccList.length; i += BCC_CHUNK) {
+        bccChunks.push(bccList.slice(i, i + BCC_CHUNK));
+      }
+    } else {
+      bccChunks.push([]); // BCCなしで1回送信
     }
 
-    const response = await axios.post(BE_API_URL, payload, {
-      headers: {
-        'Authorization': `Bearer ${generateBearerToken()}`,
-        'Content-Type':  'application/json',
-      },
-      timeout: 8000,
-    });
+    const jobIds = [];
+    for (const chunk of bccChunks) {
+      const payload = {
+        from:      { email: from },
+        to:        toList[0],
+        subject,
+        text_part: text,
+      };
+      if (chunk.length > 0) {
+        payload.bcc = chunk;
+      }
 
-    console.log(`[${new Date().toISOString()}] Mail sent: job_id=${response.data.job_id}`);
-    res.json({ success: true, jobId: response.data.job_id });
+      const response = await axios.post(BE_API_URL, payload, { headers, timeout: 8000 });
+      jobIds.push(response.data.job_id);
+      console.log(`[${new Date().toISOString()}] Mail sent: job_id=${response.data.job_id}`);
+    }
+
+    res.json({ success: true, jobIds });
 
   } catch (err) {
     const detail = err.response?.data || err.message;
