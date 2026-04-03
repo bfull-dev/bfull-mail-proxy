@@ -37,7 +37,7 @@ app.post('/api/send-mail', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { from, to, bcc, subject, text } = req.body;
+  const { from, fromName, to, bcc, subject, text, html } = req.body;
 
   if (!from || !to || !subject || !text) {
     return res.status(400).json({
@@ -66,11 +66,12 @@ app.post('/api/send-mail', async (req, res) => {
     const jobIds = [];
     for (const chunk of bccChunks) {
       const payload = {
-        from:      { email: from },
+        from:      { email: from, name: fromName || '株式会社Bfull 新商品案内' },
         to:        toList[0],
         subject,
         text_part: text,
       };
+      if (html) payload.html_part = html;
       if (chunk.length > 0) {
         payload.bcc = chunk;
       }
