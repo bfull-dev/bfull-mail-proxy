@@ -110,11 +110,17 @@ app.post('/api/get-image', async (req, res) => {
   const kintoneUrl = `https://${process.env.KINTONE_DOMAIN}/k/v1/file?fileKey=${encodeURIComponent(fileKey)}`;
 
   try {
+    // Basic認証とAPIトークン認証の両方を試みる
+    const authHeaders = {};
+    if (process.env.KINTONE_LOGIN_NAME && process.env.KINTONE_PASSWORD) {
+      const cred = Buffer.from(`${process.env.KINTONE_LOGIN_NAME}:${process.env.KINTONE_PASSWORD}`).toString('base64');
+      authHeaders['X-Cybozu-Authorization'] = cred;
+    } else {
+      authHeaders['X-Cybozu-API-Token'] = process.env.KINTONE_API_TOKEN;
+    }
+
     const response = await axios.get(kintoneUrl, {
-      headers: {
-        'X-Cybozu-API-Token': process.env.KINTONE_API_TOKEN,
-        'X-Requested-With': 'XMLHttpRequest',
-      },
+      headers: authHeaders,
       responseType: 'arraybuffer',
       timeout: 10000,
     });
