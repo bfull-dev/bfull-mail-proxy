@@ -111,7 +111,10 @@ app.post('/api/get-image', async (req, res) => {
 
   try {
     const response = await axios.get(kintoneUrl, {
-      headers: { 'X-Cybozu-API-Token': process.env.KINTONE_API_TOKEN },
+      headers: {
+        'X-Cybozu-API-Token': process.env.KINTONE_API_TOKEN,
+        'X-Requested-With': 'XMLHttpRequest',
+      },
       responseType: 'arraybuffer',
       timeout: 10000,
     });
@@ -124,9 +127,15 @@ app.post('/api/get-image', async (req, res) => {
     res.json({ success: true, dataUrl });
 
   } catch (err) {
-    const detail = err.response?.data ? `HTTP ${err.response.status}` : err.message;
-    console.error(`[${new Date().toISOString()}] Image fetch error:`, detail);
-    res.status(500).json({ success: false, error: detail });
+    let detail = err.message;
+    if (err.response) {
+      const body = err.response.data
+        ? Buffer.from(err.response.data).toString('utf-8')
+        : '';
+      detail = `HTTP ${err.response.status}: ${body}`;
+    }
+    console.error(`[${new Date().toISOString()}] Image fetch error (url=${kintoneUrl}):`, detail);
+    res.status(500).json({ success: false, error: `HTTP ${err.response?.status || err.message}` });
   }
 });
 
