@@ -1,13 +1,16 @@
 // proxy-server/server.js
 // 注文書メール送信プロキシAPI（Node.js + Express + blastengine HTTP APIリレー）
+// 画像は Cloudflare R2 public bucket にアップロードし、公開URLをHTMLに埋め込む方式
 
 const express = require('express');
 const axios   = require('axios');
 const crypto  = require('crypto');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -18,6 +21,70 @@ app.use((req, res, next) => {
 
 app.options('/api/send-mail', (req, res) => res.sendStatus(204));
 app.options('/api/get-image', (req, res) => res.sendStatus(204));
+
+// ============================================================
+// Cloudflare R2 クライアント初期化
+// ============================================================
+const r2 = new S3Client({
+  region:   'auto',
+  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId:     process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  },
+});
+
+// ============================================================
+// R2 画像アップロード
+// images: [{ filename, contentType, contentBase64 }, ...]
+// 戻り値: 公開URL文字列の配列（images と同順）
+//
+// 将来の30日削除について:
+//   アップロード時に Metadata['uploaded-at'] を付与しているため、
+//   Cloudflare Workers Cron Trigger または外部cronから
+//   ListObjectsV2 → (uploaded-at + 30日 < 現在) → DeleteObject
+//   の処理を定期実行することで自動削除が可能。
+// ============================================================
+async function uploadImagesToR2(images) {
+  const prefix  = process.env.R2_IMAGE_PREFIX || 'mail-images';
+  const bucket  = process.env.R2_BUCKET_NAME;
+  const baseUrl = process.env.R2_PUBLIC_BASE_URL;
+  const now     = new Date();
+  const yyyyMM  = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const urls    = [];
+
+  if (!bucket)  throw new Error('R2_BUCKET_NAME が設定されていません');
+  if (!baseUrl) throw new Error('R2_PUBLIC_BASE_URL が設定されていません');
+
+  for (const image of images) {
+    const uuid = uuidv4();
+    const key  = `${prefix}/${yyyyMM}/${uuid}.jpg`;
+    const buf  = Buffer.from(image.contentBase64, 'base64');
+
+    try {
+      await r2.send(new PutObjectCommand({
+        Bucket:      bucket,
+        Key:         key,
+        Body:        buf,
+        ContentType: image.contentType || 'image/jpeg',
+        Metadata: {
+          'uploaded-at':       now.toISOString(),
+          'original-filename': image.filename || 'unknown.jpg',
+          'retention-days':    String(process.env.IMAGE_RETENTION_DAYS || '30'),
+        },
+      }));
+
+      const url = `${baseUrl}/${key}`;
+      urls.push(url);
+      console.log(`[${new Date().toISOString()}] R2 upload OK: key=${key} size=${buf.length}`);
+    } catch (e) {
+      console.error(`[${new Date().toISOString()}] R2 upload FAILED: key=${key}`, e.message);
+      throw new Error(`R2アップロード失敗 (${image.filename || 'unknown'}): ${e.message}`);
+    }
+  }
+
+  return urls;
+}
 
 // ============================================================
 // blastengine Bearer トークン生成
@@ -35,13 +102,17 @@ const BCC_CHUNK   = 10; // BCCは1送信あたり最大10件
 
 // ============================================================
 // POST /api/send-mail
+// リクエストボディ:
+//   from, fromName, to, bcc, subject, text, html
+//   images: [{ filename, contentType, contentBase64 }, ...]
+// html 内の {{IMAGE_URL_1}}, {{IMAGE_URL_2}} ... を R2公開URLに置換して送信
 // ============================================================
 app.post('/api/send-mail', async (req, res) => {
   if (req.headers['x-api-key'] !== process.env.API_KEY) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
-  const { from, fromName, to, bcc, subject, text, html, attachments } = req.body;
+  const { from, fromName, to, bcc, subject, text, html, images } = req.body;
 
   if (!from || !to || !subject || !text) {
     return res.status(400).json({
@@ -53,18 +124,25 @@ app.post('/api/send-mail', async (req, res) => {
   const toList  = Array.isArray(to)  ? to  : [to];
   const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
 
-  // attachments: [{ filename, contentType, contentBase64, cid }, ...]
-  // blastengine API 形式に変換
-  const beAttachments = Array.isArray(attachments)
-    ? attachments.map(att => ({
-        filename:    att.filename,
-        data:        att.contentBase64,
-        content_type: att.contentType,
-        content_id:  att.cid,
-      }))
-    : [];
+  // ---- R2 画像アップロード & HTML placeholder 置換 ----
+  let processedHtml = html || '';
+  let imageUrls = [];
 
-  const token = buildBEToken();
+  if (Array.isArray(images) && images.length > 0) {
+    console.log(`[${new Date().toISOString()}] R2 upload start: ${images.length}件`);
+    try {
+      imageUrls = await uploadImagesToR2(images);
+      imageUrls.forEach((url, idx) => {
+        processedHtml = processedHtml.replaceAll(`{{IMAGE_URL_${idx + 1}}}`, url);
+      });
+      console.log(`[${new Date().toISOString()}] R2 upload complete: ${imageUrls.length}件`);
+    } catch (uploadErr) {
+      console.error(`[${new Date().toISOString()}] R2 upload error:`, uploadErr.message);
+      return res.status(500).json({ success: false, error: uploadErr.message });
+    }
+  }
+
+  const token   = buildBEToken();
   const headers = {
     'Authorization': `Bearer ${token}`,
     'Content-Type':  'application/json',
@@ -92,15 +170,11 @@ app.post('/api/send-mail', async (req, res) => {
         to: toList.map(email => ({ email })),
         subject,
         text_part: text,
-        html_part: html || undefined,
+        html_part: processedHtml || undefined,
       };
 
       if (chunk.length > 0) {
         payload.bcc = chunk.map(email => ({ email }));
-      }
-
-      if (beAttachments.length > 0) {
-        payload.attachments = beAttachments;
       }
 
       const response = await axios.post(
@@ -111,10 +185,10 @@ app.post('/api/send-mail', async (req, res) => {
 
       const jobId = response.data?.job_id ?? response.data?.delivery_id ?? JSON.stringify(response.data);
       jobIds.push(jobId);
-      console.log(`[${new Date().toISOString()}] Mail sent: job_id=${jobId} bcc=${chunk.length}件 attachments=${beAttachments.length}件`);
+      console.log(`[${new Date().toISOString()}] Mail sent: job_id=${jobId} bcc=${chunk.length}件 images=${imageUrls.length}件`);
     }
 
-    res.json({ success: true, jobIds });
+    res.json({ success: true, jobIds, imageUrls });
 
   } catch (err) {
     const detail = err.response
