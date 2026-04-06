@@ -120,8 +120,25 @@ app.post('/api/send-mail', async (req, res) => {
     });
   }
 
-  const toList  = Array.isArray(to)  ? to  : [to];
-  const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
+  // メールアドレス正規化: "addr" / ["addr"] / [{email:"addr"}] / {email:"addr"} → 文字列
+  function normalizeEmailStr(v) {
+    if (!v) return '';
+    if (typeof v === 'string') return v.trim();
+    if (typeof v === 'object' && !Array.isArray(v)) return String(v.email || '').trim();
+    if (Array.isArray(v) && v.length > 0) return normalizeEmailStr(v[0]);
+    return '';
+  }
+  function normalizeEmailArr(v) {
+    const arr = Array.isArray(v) ? v : (v ? [v] : []);
+    return arr.map(normalizeEmailStr).filter(s => s);
+  }
+
+  const toEmail = normalizeEmailStr(to);
+  const bccList = normalizeEmailArr(bcc);
+
+  if (!toEmail) {
+    return res.status(400).json({ success: false, error: 'to address is empty or invalid' });
+  }
 
   // ---- R2 画像アップロード & HTML placeholder 置換 ----
   let processedHtml = html || '';
@@ -166,17 +183,17 @@ app.post('/api/send-mail', async (req, res) => {
           email: from,
           name:  fromName || '',
         },
-        to: toList.map(email => ({ email })),
+        to:        toEmail,
         subject,
         text_part: text,
         html_part: processedHtml || undefined,
       };
 
       if (chunk.length > 0) {
-        payload.bcc = chunk.map(email => ({ email }));
+        payload.bcc = chunk;
       }
 
-      console.log(`[${new Date().toISOString()}] BE payload: subject="${String(payload.subject).substring(0,40)}" text_len=${payload.text_part?.length} html_len=${payload.html_part?.length} to=${JSON.stringify(payload.to)} bcc_count=${payload.bcc?.length ?? 0}`);
+      console.log(`[${new Date().toISOString()}] BE payload: subject="${String(payload.subject).substring(0,40)}" text_len=${payload.text_part?.length} html_len=${payload.html_part?.length} to="${payload.to}" bcc_count=${payload.bcc?.length ?? 0}`);
 
       const response = await axios.post(
         `${BE_API_BASE}/deliveries/transaction`,
