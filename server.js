@@ -68,9 +68,8 @@ async function uploadImagesToR2(images) {
         Body:        buf,
         ContentType: image.contentType || 'image/jpeg',
         Metadata: {
-          'uploaded-at':       now.toISOString(),
-          'original-filename': image.filename || 'unknown.jpg',
-          'retention-days':    String(process.env.IMAGE_RETENTION_DAYS || '30'),
+          'uploaded-at':    now.toISOString(),
+          'retention-days': String(process.env.IMAGE_RETENTION_DAYS || '30'),
         },
       }));
 
