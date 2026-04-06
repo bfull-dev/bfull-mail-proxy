@@ -176,6 +176,8 @@ app.post('/api/send-mail', async (req, res) => {
         payload.bcc = chunk.map(email => ({ email }));
       }
 
+      console.log(`[${new Date().toISOString()}] BE payload: subject="${String(payload.subject).substring(0,40)}" text_len=${payload.text_part?.length} html_len=${payload.html_part?.length} to=${JSON.stringify(payload.to)} bcc_count=${payload.bcc?.length ?? 0}`);
+
       const response = await axios.post(
         `${BE_API_BASE}/deliveries/transaction`,
         payload,
