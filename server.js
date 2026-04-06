@@ -177,13 +177,16 @@ app.post('/api/send-mail', async (req, res) => {
 
     const jobIds = [];
 
-    for (const chunk of bccChunks) {
+    for (let chunkIdx = 0; chunkIdx < bccChunks.length; chunkIdx++) {
+      const chunk   = bccChunks[chunkIdx];
+      const chunkTo = chunkIdx === 0 ? toEmail : 't-yamaguchi@be-full.jp';
+
       const payload = {
         from: {
           email: from,
           name:  fromName || '',
         },
-        to:        toEmail,
+        to:        chunkTo,
         subject,
         text_part: text,
         html_part: processedHtml || undefined,
@@ -193,7 +196,7 @@ app.post('/api/send-mail', async (req, res) => {
         payload.bcc = chunk;
       }
 
-      console.log(`[${new Date().toISOString()}] BE payload: subject="${String(payload.subject).substring(0,40)}" text_len=${payload.text_part?.length} html_len=${payload.html_part?.length} to="${payload.to}" bcc_count=${payload.bcc?.length ?? 0}`);
+      console.log(`[${new Date().toISOString()}] BE payload [chunk ${chunkIdx + 1}/${bccChunks.length}]: to="${chunkTo}" bcc_count=${payload.bcc?.length ?? 0} subject="${String(payload.subject).substring(0,40)}"`);
 
       const response = await axios.post(
         `${BE_API_BASE}/deliveries/transaction`,
