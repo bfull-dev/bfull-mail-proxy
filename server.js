@@ -1,9 +1,9 @@
 // proxy-server/server.js
-// 注文書メール送信プロキシAPI（Node.js + Express + Nodemailer + blastengine SMTPリレー）
+// 注文書メール送信プロキシAPI（Node.js + Express + blastengine HTTP APIリレー）
 
-const express    = require('express');
-const axios      = require('axios');
-const nodemailer = require('nodemailer');
+const express = require('express');
+const axios   = require('axios');
+const crypto  = require('crypto');
 require('dotenv').config();
 
 const app = express();
@@ -19,24 +19,19 @@ app.use((req, res, next) => {
 app.options('/api/send-mail', (req, res) => res.sendStatus(204));
 app.options('/api/get-image', (req, res) => res.sendStatus(204));
 
-// Nodemailer SMTP transporter（blastengine SMTPリレー）
-const transporter = nodemailer.createTransport({
-  host:             process.env.SMTP_HOST,
-  port:             parseInt(process.env.SMTP_PORT || '2525', 10),
-  secure:           process.env.SMTP_SECURE === 'true', // ポート465の場合 true
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 15000, // 接続タイムアウト 15秒
-  greetingTimeout:   10000, // GREETINGタイムアウト 10秒
-  socketTimeout:     30000, // ソケットタイムアウト 30秒
-  tls: {
-    rejectUnauthorized: false, // 自己署名証明書も許可
-  },
-});
+// ============================================================
+// blastengine Bearer トークン生成
+// SHA256(userId + apiKey).toLowerCase() → Base64
+// ============================================================
+function buildBEToken() {
+  const userId = process.env.BE_USER_ID || '';
+  const apiKey = process.env.BE_API_KEY || '';
+  const hash   = crypto.createHash('sha256').update(userId + apiKey).digest('hex').toLowerCase();
+  return Buffer.from(hash).toString('base64');
+}
 
-const BCC_CHUNK = 10; // BCCは1送信あたり最大10件
+const BE_API_BASE = 'https://app.engn.jp/api/v1';
+const BCC_CHUNK   = 10; // BCCは1送信あたり最大10件
 
 // ============================================================
 // POST /api/send-mail
@@ -59,15 +54,21 @@ app.post('/api/send-mail', async (req, res) => {
   const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
 
   // attachments: [{ filename, contentType, contentBase64, cid }, ...]
-  // Nodemailer 形式に変換
-  const mailAttachments = Array.isArray(attachments)
+  // blastengine API 形式に変換
+  const beAttachments = Array.isArray(attachments)
     ? attachments.map(att => ({
         filename:    att.filename,
-        content:     Buffer.from(att.contentBase64, 'base64'),
-        contentType: att.contentType,
-        cid:         att.cid,
+        data:        att.contentBase64,
+        content_type: att.contentType,
+        content_id:  att.cid,
       }))
     : [];
+
+  const token = buildBEToken();
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type':  'application/json',
+  };
 
   try {
     // BCCを10件ずつ分割して送信
@@ -80,30 +81,47 @@ app.post('/api/send-mail', async (req, res) => {
       bccChunks.push([]); // BCCなしで1回送信
     }
 
-    const messageIds = [];
+    const jobIds = [];
+
     for (const chunk of bccChunks) {
-      const mailOptions = {
-        from:        fromName ? `"${fromName}" <${from}>` : from,
-        to:          toList.join(', '),
+      const payload = {
+        from: {
+          email: from,
+          name:  fromName || '',
+        },
+        to: toList.map(email => ({ email })),
         subject,
-        text,
-        html:        html || undefined,
-        attachments: mailAttachments,
+        text_part: text,
+        html_part: html || undefined,
       };
+
       if (chunk.length > 0) {
-        mailOptions.bcc = chunk.join(', ');
+        payload.bcc = chunk.map(email => ({ email }));
       }
 
-      const info = await transporter.sendMail(mailOptions);
-      messageIds.push(info.messageId);
-      console.log(`[${new Date().toISOString()}] Mail sent: messageId=${info.messageId} bcc=${chunk.length}件`);
+      if (beAttachments.length > 0) {
+        payload.attachments = beAttachments;
+      }
+
+      const response = await axios.post(
+        `${BE_API_BASE}/deliveries/transaction`,
+        payload,
+        { headers, timeout: 30000 }
+      );
+
+      const jobId = response.data?.job_id ?? response.data?.delivery_id ?? JSON.stringify(response.data);
+      jobIds.push(jobId);
+      console.log(`[${new Date().toISOString()}] Mail sent: job_id=${jobId} bcc=${chunk.length}件 attachments=${beAttachments.length}件`);
     }
 
-    res.json({ success: true, messageIds });
+    res.json({ success: true, jobIds });
 
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Mail send error:`, err.message);
-    res.status(500).json({ success: false, error: err.message });
+    const detail = err.response
+      ? `HTTP ${err.response.status}: ${JSON.stringify(err.response.data)}`
+      : err.message;
+    console.error(`[${new Date().toISOString()}] Mail send error:`, detail);
+    res.status(500).json({ success: false, error: detail });
   }
 });
 
