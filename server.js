@@ -19,8 +19,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.options('/api/send-mail', (req, res) => res.sendStatus(204));
-app.options('/api/get-image', (req, res) => res.sendStatus(204));
+app.options('/api/send-mail',     (req, res) => res.sendStatus(204));
+app.options('/api/get-image',     (req, res) => res.sendStatus(204));
+app.options('/api/trigger-sync',  (req, res) => res.sendStatus(204));
 
 // ============================================================
 // Cloudflare R2 クライアント初期化
@@ -267,6 +268,39 @@ app.post('/api/get-image', async (req, res) => {
     }
     console.error(`[${new Date().toISOString()}] Image fetch error (url=${kintoneUrl}):`, detail);
     res.status(500).json({ success: false, error: `HTTP ${err.response?.status || err.message}` });
+  }
+});
+
+// ============================================================
+// POST /api/trigger-sync  Sales-Web バックエンドの即時 R2 同期をトリガー
+// ============================================================
+app.post('/api/trigger-sync', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.API_KEY) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  const backendUrl    = process.env.SALES_WEB_BACKEND_URL;
+  const adminSecret   = process.env.SALES_WEB_ADMIN_SECRET;
+
+  if (!backendUrl || !adminSecret) {
+    console.warn('[trigger-sync] SALES_WEB_BACKEND_URL or SALES_WEB_ADMIN_SECRET not set — skipped');
+    return res.json({ success: true, skipped: true });
+  }
+
+  try {
+    const syncRes = await axios.post(
+      `${backendUrl}/api/admin/sync`,
+      {},
+      { headers: { 'X-Admin-Secret': adminSecret }, timeout: 30000 }
+    );
+    console.log(`[${new Date().toISOString()}] trigger-sync OK: uploaded=${syncRes.data?.results?.filter(r => r.status === 'uploaded').length ?? '?'}`);
+    res.json({ success: true, result: syncRes.data });
+  } catch (err) {
+    const detail = err.response
+      ? `HTTP ${err.response.status}: ${JSON.stringify(err.response.data)}`
+      : err.message;
+    console.error(`[${new Date().toISOString()}] trigger-sync error:`, detail);
+    res.status(500).json({ success: false, error: detail });
   }
 });
 
