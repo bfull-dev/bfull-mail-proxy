@@ -52,12 +52,12 @@ async function uploadImagesToR2(images) {
   const baseUrl = process.env.R2_PUBLIC_BASE_URL;
   const now     = new Date();
   const yyyyMM  = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const urls    = [];
 
   if (!bucket)  throw new Error('R2_BUCKET_NAME が設定されていません');
   if (!baseUrl) throw new Error('R2_PUBLIC_BASE_URL が設定されていません');
 
-  for (const image of images) {
+  // 全画像を並列アップロード（Promise.all は順序を保持する）
+  return Promise.all(images.map(async (image) => {
     const uuid = uuidv4();
     const key  = `${prefix}/${yyyyMM}/${uuid}.jpg`;
     const buf  = Buffer.from(image.contentBase64, 'base64');
@@ -75,15 +75,13 @@ async function uploadImagesToR2(images) {
       }));
 
       const url = `${baseUrl}/${key}`;
-      urls.push(url);
       console.log(`[${new Date().toISOString()}] R2 upload OK: key=${key} size=${buf.length}`);
+      return url;
     } catch (e) {
       console.error(`[${new Date().toISOString()}] R2 upload FAILED: key=${key}`, e.message);
       throw new Error(`R2アップロード失敗 (${image.filename || 'unknown'}): ${e.message}`);
     }
-  }
-
-  return urls;
+  }));
 }
 
 // ============================================================
